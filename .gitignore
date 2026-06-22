@@ -1,0 +1,7 @@
+CLAUDE.local.md
+.venv
+__pycache__/
+*.pyc
+.env
+data/raw_nvd_snapshot.json
+data/qdrant_db/
