@@ -18,6 +18,10 @@ log = logging.getLogger(__name__)
 NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 DEFAULT_LIMIT = 5000
 RESULTS_PER_PAGE = 500
+# NVD rejects date-range queries wider than 120 days -- this is the seed window for a fresh
+# ingest (recent CVEs, not NVD's natural oldest-by-ID order). Ongoing --sync runs ask for a much
+# narrower "since last run" window, comfortably inside this same cap.
+RECENT_DAYS_DEFAULT = 120
 OUTPUT_PATH = Path("data/raw_nvd_snapshot.json")
 CLEAN_RECORDS_PATH = Path("data/clean_records.jsonl")
 
@@ -86,7 +90,7 @@ def fetch_page_with_retry(params: dict, headers: dict, max_retries: int = 5) -> 
     raise RuntimeError(f"Failed to fetch from NVD API after {max_retries} attempts.")
 
 
-def fetch_snapshot(limit: int = DEFAULT_LIMIT, is_sync: bool = False) -> dict:
+def fetch_snapshot(limit: int = DEFAULT_LIMIT, is_sync: bool = False, recent_days: int = RECENT_DAYS_DEFAULT) -> dict:
     """Fetch paginated CVE records from NVD up to the specified limit, or sync incrementally."""
     api_key = os.environ.get("NVD_API_KEY")
     headers = {}
@@ -109,15 +113,28 @@ def fetch_snapshot(limit: int = DEFAULT_LIMIT, is_sync: bool = False) -> dict:
                 sync_start = (dt - datetime.timedelta(hours=1)).isoformat()
             except ValueError:
                 sync_start = last_mod
-            
+
             # End date is now (UTC)
             sync_end = datetime.datetime.utcnow().isoformat()
-            
+
             params["lastModStartDate"] = sync_start
             params["lastModEndDate"] = sync_end
             log.info("Incremental Sync Mode: fetching updates modified between %s and %s", sync_start, sync_end)
         else:
-            log.info("No previous records found. Performing full initial ingest.")
+            # First-ever run, even via --sync: seed with a recent window rather than NVD's
+            # natural oldest-by-ID order, otherwise we'd start from 1999 CVEs.
+            log.info("No previous records found. Seeding with the last %d days of publications.", recent_days)
+            sync_end = datetime.datetime.utcnow()
+            sync_start = sync_end - datetime.timedelta(days=recent_days)
+            params["pubStartDate"] = sync_start.isoformat()
+            params["pubEndDate"] = sync_end.isoformat()
+    else:
+        # Plain (non-sync) full ingest -- also seed recent, not oldest-by-ID.
+        end = datetime.datetime.utcnow()
+        start = end - datetime.timedelta(days=recent_days)
+        params["pubStartDate"] = start.isoformat()
+        params["pubEndDate"] = end.isoformat()
+        log.info("Fetching CVEs published in the last %d days (%s to %s).", recent_days, start.date(), end.date())
 
     start_index = 0
     all_vulnerabilities = []
@@ -158,10 +175,12 @@ def main():
     parser = argparse.ArgumentParser(description="Fetch NVD CVE snapshot resiliently.")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="Max CVEs to fetch (default: 5000)")
     parser.add_argument("--sync", action="store_true", help="Perform incremental delta sync since last run")
+    parser.add_argument("--recent-days", type=int, default=RECENT_DAYS_DEFAULT,
+                         help=f"For a fresh seed (no --sync, or first-ever --sync run): how many days back to fetch (max 120, NVD's date-range limit; default {RECENT_DAYS_DEFAULT})")
     args = parser.parse_args()
 
     log.info("Starting NVD snapshot download...")
-    data = fetch_snapshot(limit=args.limit, is_sync=args.sync)
+    data = fetch_snapshot(limit=args.limit, is_sync=args.sync, recent_days=args.recent_days)
     
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     

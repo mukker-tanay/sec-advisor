@@ -1,4 +1,6 @@
-"""Embed each clean CVE record and upsert it into Qdrant. Re-runnable: upserts by cve_id, so running twice doesn't duplicate."""
+"""Embed each clean CVE record and load it into Qdrant. Re-runnable: recreates the collection
+fresh from clean_records.jsonl every run, so it always exactly matches the current source data
+(no stale leftovers from an earlier seed, no manual cleanup needed)."""
 import json
 import os
 from pathlib import Path
@@ -46,11 +48,18 @@ def main():
     else:
         client = QdrantClient(path=qdrant_path)
 
-    if not client.collection_exists(COLLECTION_NAME):
-        client.create_collection(
-            collection_name=COLLECTION_NAME,
-            vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
-        )
+    # clean_records.jsonl is already the complete, deduplicated dataset on every run
+    # (fetch_snapshot.py merges by cve_id into the raw snapshot, and parse_records.py
+    # rebuilds clean_records.jsonl fully from that each time). So the collection should be
+    # recreated fresh from it rather than upserted onto whatever was there before --
+    # otherwise records removed from the source (e.g. an earlier toy-data seed) linger
+    # in Qdrant forever even though they're no longer in clean_records.jsonl.
+    if client.collection_exists(COLLECTION_NAME):
+        client.delete_collection(COLLECTION_NAME)
+    client.create_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
+    )
 
     texts = [record_to_text(r) for r in records]
     embeddings = model.encode(texts, show_progress_bar=True)
