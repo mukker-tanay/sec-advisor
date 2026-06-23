@@ -1,0 +1,59 @@
+name: Refresh CVE Data
+
+on:
+  schedule:
+    # Every 3rd day of the month at 05:00 UTC -- approximate "every few days" cadence.
+    - cron: "0 5 */3 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Fetch new/updated CVEs (delta sync, never deletes)
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: uv run python fetch_snapshot.py --sync
+
+      - name: Rebuild clean_records.jsonl from the merged raw snapshot
+        run: uv run python parse_records.py
+
+      # Embedding is intentionally NOT run here -- the Hugging Face Docker build already runs
+      # embed_and_store.py from data/clean_records.jsonl, so doing it again in CI would just be
+      # redundant model-download + compute for no benefit. This job's only job is to keep the
+      # source data current and trigger that downstream rebuild.
+
+      - name: Commit data refresh to main
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/clean_records.jsonl data/raw_nvd_snapshot.json
+          if git diff --staged --quiet; then
+            echo "No new/updated CVEs -- nothing to commit."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "Scheduled CVE data refresh"
+            git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The default GITHUB_TOKEN used by the push above deliberately does NOT trigger other
+      # workflows (GitHub's anti-recursion safeguard), so the existing push-triggered
+      # sync.yml would never fire from that push alone. Push to HF Spaces directly here instead,
+      # the same way sync.yml does, rather than relying on a chained trigger.
+      - name: Push to Hugging Face Spaces
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: git push --force https://mukker-tanay:$HF_TOKEN@huggingface.co/spaces/mukker-tanay/sec-advisor main

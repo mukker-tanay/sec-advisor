@@ -22,7 +22,7 @@ It's a demo-scale CV project, not a production system — built to practice and 
 
 The system consists of three main components:
 1. **Resilient Ingestion Pipeline:** 
-   - [fetch_snapshot.py](fetch_snapshot.py) paginates and fetches raw CVE records from the NVD API. It features **exponential backoff with jitter** to handle rate-limiting and a **delta-sync** mode to incrementally fetch updates.
+   - [fetch_snapshot.py](fetch_snapshot.py) paginates and fetches raw CVE records from the NVD API. It features **exponential backoff with jitter** to handle rate-limiting and a **delta-sync** mode to incrementally fetch updates. A scheduled GitHub Action ([refresh-data.yml](.github/workflows/refresh-data.yml)) runs this every ~3 days and redeploys automatically.
    - [parse_records.py](parse_records.py) cleans and validates records using a strict **Pydantic v2 schema**, gracefully catching schema drifts without crashing.
    - [embed_and_store.py](embed_and_store.py) recreates the Qdrant collection fresh from `data/clean_records.jsonl` on every run (rather than incrementally upserting), so it always exactly matches the current source data with no stale leftovers from an earlier seed.
 2. **Hybrid RAG Retriever:**
@@ -51,8 +51,8 @@ This is the result on a small, fixed test suite — it means the system handles 
 
 ## What this does NOT do
 
-- **The dataset is small and recency-windowed, not comprehensive.** The default fetch pulls NVD records published in roughly the last 120 days (NVD's own cap on a single date-range query), not the full CVE history. It's a demo-scale snapshot for proving the RAG pipeline works, not a complete vulnerability database — don't expect it to know about a CVE from several years ago unless a sync has specifically pulled it in.
-- **No live syncing in practice yet.** A `--sync` delta-fetch mode exists in `fetch_snapshot.py` (and is designed to only ever add CVEs, never prune old ones), but nothing currently triggers it automatically — every deployed instance runs off a snapshot taken at build time. A scheduled job to actually run this on a cadence is planned, not yet wired up.
+- **The dataset is demo-scale, not comprehensive.** It's seeded from a recent ~120-day NVD window (NVD's own cap on a single date-range query) and grows from there via scheduled syncing — it's not the full CVE history, and won't know about most older CVEs unless a sync has specifically pulled one in (e.g. as a side effect of NVD revising its metadata).
+- **The dataset only ever grows, never prunes.** A scheduled GitHub Action (`.github/workflows/refresh-data.yml`) re-runs the delta-sync every ~3 days and redeploys automatically. By design this never deletes old CVEs — and NVD's "last modified" sync also sweeps in metadata updates to old CVEs, not just new publications, so the dataset (and repo size) will keep growing over time, not just with genuinely new advisories.
 - **No authentication, no multi-user state.** It's a single-shared demo, not a product.
 - **The prompt-injection resistance is tested against a small, fixed suite, not proven unbreakable.** `evaluate.py` currently passes all 13 of its cases, including a role-changing jailbreak prompt — but that means it handles these specific known attempts, not that it resists prompt injection in general. Treat any security claim here as "tested against these cases," not "guaranteed."
 

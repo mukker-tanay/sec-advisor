@@ -3,5 +3,5 @@ CLAUDE.local.md
 __pycache__/
 *.pyc
 .env
-data/raw_nvd_snapshot.json
 data/qdrant_db/
+.claude/scheduled_tasks.lock
